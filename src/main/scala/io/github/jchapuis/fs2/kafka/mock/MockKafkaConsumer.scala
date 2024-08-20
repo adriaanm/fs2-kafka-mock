@@ -78,15 +78,13 @@ object MockKafkaConsumer {
     * @return
     *   a resource containing the mock kafka consumer
     */
-  def apply(topics: String*)(implicit IORuntime: IORuntime): Resource[IO, MockKafkaConsumer] =
-    Resource.eval(Ref.of[IO, Map[String, Long]](topics.map(_ -> 0L).toMap)).flatMap { currentOffsets =>
-      val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
-      Resource.make(Mutex[IO].map { mutex =>
-        val partitions = topics.map(topic => new TopicPartition(topic, 0))
-        val beginningOffsets = partitions.map(_ -> (0L: java.lang.Long)).toMap
-        mockConsumer.updateBeginningOffsets(beginningOffsets.asJava)
-        new NativeMockKafkaConsumer(mockConsumer, currentOffsets, mutex)
-      })(_ => IO(mockConsumer.close()))
-    }
+  def apply(topics: String*)(implicit IORuntime: IORuntime): Resource[IO, MockKafkaConsumer] = {
+    val mockConsumer = new MockConsumer[Array[Byte], Array[Byte]](OffsetResetStrategy.EARLIEST)
+    Resource.make(
+      IO {
+        new NativeMockKafkaConsumer(mockConsumer, topics.toSeq)
+      }
+    )(_ => IO(mockConsumer.close()))
+  }
 
 }

@@ -1,9 +1,6 @@
 package io.github.jchapuis.fs2.kafka.mock.impl
 
 import cats.effect.IO
-import cats.effect.kernel.Ref
-import cats.effect.std.Mutex
-import cats.effect.unsafe.IORuntime
 import fs2.kafka.consumer.MkConsumer
 import fs2.kafka.*
 import io.github.jchapuis.fs2.kafka.mock.MockKafkaConsumer
@@ -19,73 +16,78 @@ import java.{ lang, util }
 import scala.annotation.nowarn
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters.*
+import scala.collection.concurrent.TrieMap
+import cats.effect.unsafe.IORuntime
 
 private[mock] class NativeMockKafkaConsumer(
-    val mockConsumer: MockConsumer[Array[Byte], Array[Byte]],
-    currentOffsets: Ref[IO, Map[String, Long]],
-    mutex: Mutex[IO]
-)(implicit IORuntime: IORuntime)
-    extends MockKafkaConsumer {
+  val mockConsumer: MockConsumer[Array[Byte], Array[Byte]],
+  topics: Seq[String]
+)(implicit runtime: IORuntime)
+  extends MockKafkaConsumer {
+
+  {
+    val partitions       = topics.map(topic => new TopicPartition(topic, 0))
+    val beginningOffsets = partitions.map(_ -> (0L: java.lang.Long)).toMap
+    mockConsumer.updateBeginningOffsets(beginningOffsets.asJava)
+  }
+
   private val singlePartition = 0
 
-  private def incrementOffset(topic: String): IO[Long] =
-    for {
-      offsets <- currentOffsets.get
-      updatedOffsets <- currentOffsets.updateAndGet(_.updated(topic, offsets(topic) + 1))
-    } yield updatedOffsets(topic)
+  // create a java.util.concurrent.ConcurrentMap from topics to 0
+  private val currentOffsets = TrieMap(topics.map(_ -> 0L): _*)
 
   def publish[K, V](topic: String, key: K, value: V, timestamp: Option[Instant])(implicit
     keySerializer: KeySerializer[IO, K],
     valueSerializer: ValueSerializer[IO, V]
   ): IO[Unit] = for {
-    key <- keySerializer.serialize(topic, Headers.empty, key)
+    _     <- IO.println(s"publishing to topic $topic under key $key with value $value")
+    key   <- keySerializer.serialize(topic, Headers.empty, key)
     value <- valueSerializer.serialize(topic, Headers.empty, value)
-    _ <- addRecord(topic, key, Option(value), timestamp)
+    _     <- IO(addRecord(topic, key, Option(value), timestamp))
+    _     <- IO.sleep(500.milli) // TODO: why is this needed?? cede before and after doesn't do anything
   } yield ()
 
-  private def waitForConsumerToBeAssignedTo(topic: String): IO[Unit] =
-    IO(mockConsumer.assignment().asScala.map(_.topic()).toSet).flatMap { assignedTopics =>
-      if (assignedTopics.contains(topic)) IO.unit
-      else IO.sleep(100.millis) >> waitForConsumerToBeAssignedTo(topic)
-    }
-
   private def addRecord(
-      topic: String,
-      key: Array[Byte],
-      value: Option[Array[Byte]],
-      maybeTimestamp: Option[Instant]
-  ) =
-    waitForConsumerToBeAssignedTo(topic) >>
-      mutex.lock.surround {
-        IO.uncancelable(_ =>
-          for {
-            offset <- incrementOffset(topic)
-            timestamp <- maybeTimestamp.map(IO.pure).getOrElse(IO.realTimeInstant).map(_.toEpochMilli)
-            record = new org.apache.kafka.clients.consumer.ConsumerRecord[Array[Byte], Array[Byte]](
-              topic,
-              singlePartition,
-              offset,
-              timestamp,
-              maybeTimestamp.map(_ => TimestampType.CREATE_TIME).getOrElse(TimestampType.LOG_APPEND_TIME),
-              key.length,
-              value.map(_.length).getOrElse(0),
-              key,
-              value.orNull,
-              new RecordHeaders,
-              Optional.empty[Integer]
-            )
-            _ <- IO(mockConsumer.addRecord(record))
-          } yield ()
-        )
-      }
+    topic: String,
+    key: Array[Byte],
+    value: Option[Array[Byte]],
+    maybeTimestamp: Option[Instant]
+  ): Unit = {
+    val offset = currentOffsets
+      .updateWith(topic)(_.map(_ + 1))
+      .getOrElse(0L)
+
+    val timestamp = maybeTimestamp.getOrElse(Instant.now()).toEpochMilli
+
+    val record = new org.apache.kafka.clients.consumer.ConsumerRecord[Array[Byte], Array[Byte]](
+      topic,
+      singlePartition,
+      offset,
+      timestamp,
+      maybeTimestamp.map(_ => TimestampType.CREATE_TIME).getOrElse(TimestampType.LOG_APPEND_TIME),
+      key.length,
+      value.map(_.length).getOrElse(0),
+      key,
+      value.orNull,
+      new RecordHeaders,
+      Optional.empty[Integer]
+    )
+
+    println(s"scheduling record to topic $topic at offset $offset")
+
+    mockConsumer.schedulePollTask { () =>
+      println(s"adding record to topic $topic at offset $offset")
+      mockConsumer.addRecord(record)
+    }
+  }
 
   def redact[K](topic: String, key: K)(implicit keySerializer: KeySerializer[IO, K]): IO[Unit] =
     for {
       key <- keySerializer.serialize(topic, Headers.empty, key)
-      _ <- addRecord(topic, key, None, None)
+      _   <- IO(addRecord(topic, key, None, None))
     } yield ()
 
-  private def withMutex[T](f: => T): T = mutex.lock.surround(IO(f)).unsafeRunSync()
+  private def withMutex[T](f: => T): T = f // synchronized(f)
 
   @nowarn("cat=deprecation")
   implicit lazy val mkConsumer: MkConsumer[IO] = new MkConsumer[IO] {
@@ -95,6 +97,7 @@ private[mock] class NativeMockKafkaConsumer(
       def subscription(): util.Set[String] = withMutex(mockConsumer.subscription())
 
       def subscribe(topics: util.Collection[String]): Unit = withMutex {
+        println(s"subscribing to $topics")
         mockConsumer.subscribe(topics)
         ensureConsumerAssignedTo(topics.asScala.toList)
       }
@@ -115,9 +118,11 @@ private[mock] class NativeMockKafkaConsumer(
 
       def poll(timeout: Long): ConsumerRecords[Array[Byte], Array[Byte]] = withMutex(mockConsumer.poll(timeout))
 
-      def poll(timeout: Duration): ConsumerRecords[Array[Byte], Array[Byte]] = withMutex(
-        mockConsumer.poll(timeout)
-      )
+      def poll(timeout: Duration): ConsumerRecords[Array[Byte], Array[Byte]] = withMutex {
+        val res = mockConsumer.poll(timeout)
+        println(s"polling result: ${res.iterator().asScala.toList}")
+        res
+      }
 
       def commitSync(): Unit = withMutex(mockConsumer.commitSync())
 
