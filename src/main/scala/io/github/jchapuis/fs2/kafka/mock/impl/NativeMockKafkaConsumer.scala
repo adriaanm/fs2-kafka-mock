@@ -10,12 +10,12 @@ import io.github.jchapuis.fs2.kafka.mock.MockKafkaConsumer
 import org.apache.kafka.clients.consumer.*
 import org.apache.kafka.common.header.internals.RecordHeaders
 import org.apache.kafka.common.record.TimestampType
-import org.apache.kafka.common.{Metric, MetricName, Node, PartitionInfo, TopicPartition, Uuid}
+import org.apache.kafka.common.{ Metric, MetricName, Node, PartitionInfo, TopicPartition, Uuid }
 
-import java.time.{Duration, Instant}
-import java.util.{Optional, OptionalLong}
+import java.time.{ Duration, Instant }
+import java.util.{ Optional, OptionalLong }
 import java.util.regex.Pattern
-import java.{lang, util}
+import java.{ lang, util }
 import scala.annotation.nowarn
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters.*
@@ -35,8 +35,8 @@ private[mock] class NativeMockKafkaConsumer(
     } yield updatedOffsets(topic)
 
   def publish[K, V](topic: String, key: K, value: V, timestamp: Option[Instant])(implicit
-      keySerializer: KeySerializer[IO, K],
-      valueSerializer: ValueSerializer[IO, V]
+    keySerializer: KeySerializer[IO, K],
+    valueSerializer: ValueSerializer[IO, V]
   ): IO[Unit] = for {
     key <- keySerializer.serialize(topic, Headers.empty, key)
     value <- valueSerializer.serialize(topic, Headers.empty, value)
@@ -164,8 +164,8 @@ private[mock] class NativeMockKafkaConsumer(
         withMutex(mockConsumer.committed(partitions))
 
       def committed(
-          partitions: util.Set[TopicPartition],
-          timeout: Duration
+        partitions: util.Set[TopicPartition],
+        timeout: Duration
       ): util.Map[TopicPartition, OffsetAndMetadata] = withMutex(mockConsumer.committed(partitions, timeout))
 
       def metrics(): util.Map[MetricName, _ <: Metric] = withMutex(mockConsumer.metrics())
@@ -194,7 +194,7 @@ private[mock] class NativeMockKafkaConsumer(
       def resume(partitions: util.Collection[TopicPartition]): Unit = withMutex(mockConsumer.resume(partitions))
 
       def offsetsForTimes(
-          timestampsToSearch: util.Map[TopicPartition, lang.Long]
+        timestampsToSearch: util.Map[TopicPartition, lang.Long]
       ): util.Map[TopicPartition, OffsetAndTimestamp] = withMutex {
         val partitions = timestampsToSearch.keySet().asScala.toList
         mockConsumer
@@ -209,24 +209,24 @@ private[mock] class NativeMockKafkaConsumer(
       }
 
       def offsetsForTimes(
-          timestampsToSearch: util.Map[TopicPartition, lang.Long],
-          timeout: Duration
+        timestampsToSearch: util.Map[TopicPartition, lang.Long],
+        timeout: Duration
       ): util.Map[TopicPartition, OffsetAndTimestamp] = offsetsForTimes(timestampsToSearch)
 
       def beginningOffsets(partitions: util.Collection[TopicPartition]): util.Map[TopicPartition, lang.Long] =
         withMutex(mockConsumer.beginningOffsets(partitions))
 
       def beginningOffsets(
-          partitions: util.Collection[TopicPartition],
-          timeout: Duration
+        partitions: util.Collection[TopicPartition],
+        timeout: Duration
       ): util.Map[TopicPartition, lang.Long] = withMutex(mockConsumer.beginningOffsets(partitions, timeout))
 
       def endOffsets(partitions: util.Collection[TopicPartition]): util.Map[TopicPartition, lang.Long] =
         withMutex(mockConsumer.endOffsets(partitions))
 
       def endOffsets(
-          partitions: util.Collection[TopicPartition],
-          timeout: Duration
+        partitions: util.Collection[TopicPartition],
+        timeout: Duration
       ): util.Map[TopicPartition, lang.Long] = withMutex(mockConsumer.endOffsets(partitions, timeout))
 
       def currentLag(topicPartition: TopicPartition): OptionalLong = withMutex(
